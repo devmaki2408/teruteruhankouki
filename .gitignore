@@ -27,4 +27,4 @@ env/
 .ipynb_checkpoints/
 
 # Logs
-*.log
+*.logbizspark_app_v2.py
