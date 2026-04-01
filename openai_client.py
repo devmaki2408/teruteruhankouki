@@ -2,20 +2,37 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Union
 
+import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
+JSONType = Union[Dict[str, Any], List[Any]]
+
 load_dotenv()
 
-JSONType = Union[Dict[str, Any], List[Any]]
+
+def _get_api_key() -> Optional[str]:
+    try:
+        if "OPENAI_API_KEY" in st.secrets:
+            secret_key = st.secrets["OPENAI_API_KEY"]
+            if secret_key:
+                return secret_key
+    except Exception:
+        pass
+
+    env_key = os.getenv("OPENAI_API_KEY")
+    if env_key:
+        return env_key
+
+    return None
 
 
 def is_available() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY"))
+    return bool(_get_api_key())
 
 
 def _get_client() -> Optional[OpenAI]:
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = _get_api_key()
     if not api_key:
         return None
     return OpenAI(api_key=api_key)
@@ -25,7 +42,7 @@ def call_openai(prompt: str, max_tokens: int = 1200) -> Optional[str]:
     try:
         client = _get_client()
         if client is None:
-            print("⚠️ OPENAI_API_KEY が設定されていません")
+            print("⚠️ OPENAI_API_KEY が見つかりません")
             return None
 
         response = client.responses.create(
