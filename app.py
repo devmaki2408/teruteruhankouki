@@ -1,448 +1,689 @@
+# app.py
+# ============================================================
+# 画面表示・画面遷移・全体制御
+# ============================================================
+
 import streamlit as st
+
+import database as db
 import openai_client as ai
+import prompts
+from ranking import deduplicate, rank_by_query
 
 
-# ---------------------------
-# ページ設定
-# ---------------------------
-st.set_page_config(
-    page_title="BizSpark AI",
-    page_icon="⚡",
-    layout="wide",
-)
-
-
-# ---------------------------
-# 簡易CSS
-# ---------------------------
-CUSTOM_CSS = """
-<style>
-    .main-title {
-        font-size: 2.2rem;
-        font-weight: 700;
-        margin-bottom: 0.4rem;
-    }
-    .sub-copy {
-        color: #666;
-        margin-bottom: 1.5rem;
-    }
-    .section-title {
-        font-size: 1.35rem;
-        font-weight: 700;
-        margin-top: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    .card {
-        border: 1px solid #E5E7EB;
-        border-radius: 14px;
-        padding: 16px;
-        margin-bottom: 12px;
-        background: #FFFFFF;
-    }
-    .mini-card {
-        border: 1px solid #E5E7EB;
-        border-radius: 14px;
-        padding: 14px;
-        background: #FFFFFF;
-        height: 100%;
-    }
-    .pill {
-        display: inline-block;
-        padding: 4px 10px;
-        border-radius: 999px;
-        background: #EEF2FF;
-        color: #3730A3;
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin-bottom: 10px;
-    }
-    .score-box {
-        display: inline-block;
-        padding: 8px 14px;
-        border-radius: 999px;
-        background: #EFF6FF;
-        color: #1D4ED8;
-        font-weight: 700;
-    }
-    .force-label {
-        font-weight: 700;
-        margin-bottom: 6px;
-    }
-    .muted {
-        color: #6B7280;
-    }
-</style>
-"""
-
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
-
-# ---------------------------
+# ============================================================
 # モックデータ
-# ---------------------------
+# ============================================================
+
 MOCK_ISSUES = [
-    {
-        "title": "育児と仕事の両立による時間不足",
-        "description": "保育園の送迎、家事、仕事が重なり、自分や家族のために使える時間が不足している。",
-    },
-    {
-        "title": "育児情報の分散と信頼性の低さ",
-        "description": "SNSやネット記事、病院など情報源が分かれており、何を信じるべきか判断が難しい。",
-    },
-    {
-        "title": "急な残業や体調不良時の預け先不足",
-        "description": "緊急時に子どもを安心して預けられる先が見つからず、仕事との両立が不安定になる。",
-    },
-    {
-        "title": "夫婦間での育児負担の偏り",
-        "description": "役割分担が曖昧で、片方に家事・育児が集中しやすく、関係性にも影響が出る。",
-    },
-    {
-        "title": "子どもの教育投資の判断が難しい",
-        "description": "習い事や教材が多く、何が子どもに合うのかを判断する材料が不足している。",
-    },
+    {"id": 1, "text": "高齢者の孤独・孤立問題が深刻化しており、日常的なコミュニケーション手段が不足している"},
+    {"id": 2, "text": "介護施設スタッフの慢性的な人手不足により、個別ケアの質が低下している"},
+    {"id": 3, "text": "認知症の早期発見が遅れ、適切な介入タイミングを逃すケースが多い"},
+    {"id": 4, "text": "遠方に住む家族が親の健康状態をリアルタイムで把握する手段がない"},
+    {"id": 5, "text": "地域包括支援センターへの相談窓口が少なく、情報へのアクセスに格差がある"},
 ]
-
+MOCK_MORE_ISSUES = [
+    {"id": 6, "text": "リハビリの継続率が低く、退院後の機能回復が進まない"},
+    {"id": 7, "text": "服薬管理が難しく、誤薬・飲み忘れによる健康被害が発生している"},
+    {"id": 8, "text": "介護保険制度の複雑さにより、利用できるサービスを知らない高齢者が多い"},
+    {"id": 9, "text": "介護者（家族）のメンタルヘルスケアが十分に行われていない"},
+    {"id": 10, "text": "施設入居待機者が多く、在宅介護の限界を超えた家族が困窮している"},
+]
 MOCK_IDEAS = [
-    {
-        "title": "AI育児アシスタントSaaS",
-        "overview": "家庭状況や子どもの発達記録をもとに、日々の育児判断を支援するAIサービス。",
-        "solution": "発達記録・生活リズム・保護者の悩みを入力し、AIが優先課題と対応策を提案する。",
-        "value": "迷いを減らし、育児判断の時間を短縮できる。",
-        "score": 91,
-        "reason": "課題適合度と継続利用のしやすさが高く、将来的な周辺サービス展開もしやすい。",
-    },
-    {
-        "title": "共働き家庭向け緊急サポートマッチング",
-        "overview": "急な残業や体調不良時に、近隣や提携先の支援リソースとつながれる仕組み。",
-        "solution": "位置情報と条件登録をもとに、短時間で利用可能な預け先・送迎支援を提示する。",
-        "value": "緊急時の不安を減らし、仕事継続性を高める。",
-        "score": 84,
-        "reason": "課題は強いが、オペレーション設計と信頼確保が成功の鍵になる。",
-    },
-    {
-        "title": "育児ナレッジ統合プラットフォーム",
-        "overview": "分散した育児情報を整理し、家庭ごとに必要な情報だけを届ける仕組み。",
-        "solution": "複数情報源を整理し、家庭の属性に応じて優先度付きで見せる。",
-        "value": "情報収集の負担を減らし、納得感のある意思決定を支援できる。",
-        "score": 78,
-        "reason": "ニーズは大きいが、差別化と継続利用設計が必要。",
-    },
+    {"id": 1, "title": "AIコンシェルジュ話し相手サービス",
+     "summary": "高齢者向けに毎日自動でコールし、会話・健康チェック・服薬確認を行うAIエージェント。", "score": 82},
+    {"id": 2, "title": "介護スタッフ業務自動化プラットフォーム",
+     "summary": "記録・シフト・申し送りをAIで自動化し、スタッフの直接ケア時間を最大化するSaaS。", "score": 78},
+    {"id": 3, "title": "認知症早期スクリーニングアプリ",
+     "summary": "スマホの操作ログ・音声から認知機能の変化を継続モニタリングし、家族・医師へ通知。", "score": 75},
+    {"id": 4, "title": "遠距離家族向け見守りダッシュボード",
+     "summary": "センサー・ウェアラブル・訪問記録を統合し、離れた家族がワンビューで状態把握できるサービス。", "score": 71},
+    {"id": 5, "title": "地域ケアナビゲーターマッチング",
+     "summary": "地域の支援制度・施設情報をパーソナライズして提供し、ケアマネジャーとのマッチングも行うプラットフォーム。", "score": 68},
 ]
-
-MOCK_FIVE_FORCES = {
+MOCK_MORE_IDEAS = [
+    {"id": 6, "title": "リハビリ継続支援アプリ",
+     "summary": "動画ガイド・進捗可視化・リマインダーで在宅リハビリの継続率を向上させるアプリ。", "score": 65},
+    {"id": 7, "title": "スマート服薬管理デバイス",
+     "summary": "IoT薬箱＋アプリで飲み忘れ・誤薬を防止し、薬局・医師と情報共有できるデバイスサービス。", "score": 63},
+    {"id": 8, "title": "介護保険ナビAI",
+     "summary": "利用者の状況をヒアリングして最適な介護保険サービスを提案するチャットボット。", "score": 60},
+    {"id": 9, "title": "介護者メンタルケアコミュニティ",
+     "summary": "介護家族向けのオンラインコミュニティ＋専門家相談窓口をサブスクで提供。", "score": 57},
+    {"id": 10, "title": "施設入居マッチングプラットフォーム",
+     "summary": "空き状況・価格・評判をリアルタイム集約し、最短で最適施設を探せるマッチングサービス。", "score": 54},
+]
+MOCK_DETAIL = {
     "five_forces": {
-        "industry_rivalry": {
-            "score": 4,
-            "reason": "既存の育児アプリや情報サービスが多く、差別化が必要。",
-        },
-        "threat_of_new_entry": {
-            "score": 3,
-            "reason": "技術参入は可能だが、信頼性と継続利用の設計が参入障壁になる。",
-        },
-        "threat_of_substitutes": {
-            "score": 3,
-            "reason": "紙の記録、SNS、既存検索などで一部代替できる。",
-        },
-        "buyer_power": {
-            "score": 4,
-            "reason": "ユーザーは代替手段を持ちやすく、比較検討もしやすい。",
-        },
-        "supplier_power": {
-            "score": 2,
-            "reason": "サービス構築に必要な外部依存は相対的に限定的。",
-        },
-    }
+        "競合（既存競合との競争）": "大手通信会社・ヘルスケアスタートアップが参入済み。ただし高齢者特化×AIコンシェルジュの専業プレイヤーは少なく差別化余地あり。",
+        "新規参入の脅威": "初期開発コストは中程度。SaaS型で規模化しやすいが、医療・個人情報規制がバリアとなる。",
+        "代替品の脅威": "家族による電話・訪問介護サービスが代替。ただし費用・手間のトレードオフで本サービスへのニーズは高い。",
+        "買い手の交渉力": "個人高齢者は価格感度が高い。自治体・施設向けB2Bモデルへの転換で交渉力を分散できる。",
+        "売り手の交渉力": "AIモデルはAPIで調達可能。音声認識・TTS技術の依存度は高いが複数ベンダー選択肢あり。",
+    },
+    "talent": [
+        {"role": "AIエンジニア（音声・NLP）",
+         "reason": "自然な会話生成と音声認識の品質が製品体験の核心。LLMファインチューニング・音声合成の実装経験が必須。"},
+        {"role": "ケアマネジャー経験者（ドメインアドバイザー）",
+         "reason": "高齢者・家族・施設の実態を深く理解した人材が、ユースケース設計と規制対応の両面で不可欠。"},
+        {"role": "BizDev（自治体・医療機関営業）",
+         "reason": "公的機関・介護施設へのエンタープライズ営業は関係構築に時間がかかる。早期からの専任人材が成長速度を左右する。"},
+        {"role": "プロダクトデザイナー（高齢者UX専門）",
+         "reason": "デジタルリテラシーが多様な高齢者向けUIは専門知識が必要。誤操作・離脱率の最小化が継続率に直結する。"},
+    ],
 }
 
-MOCK_MEMBERS = [
-    {
-        "name": "田中 健一",
-        "skills": ["新規事業開発", "PM"],
-        "reason": "新規事業立ち上げとプロジェクト推進の経験があり、全体設計に向いている。",
-    },
-    {
-        "name": "佐藤 美咲",
-        "skills": ["UXリサーチ", "UI/UX設計"],
-        "reason": "ユーザー理解と体験設計に強く、課題適合性の高いサービスに落とし込める。",
-    },
-    {
-        "name": "鈴木 翔太",
-        "skills": ["法人営業", "アライアンス"],
-        "reason": "提携先開拓や外部連携に強く、事業拡大の初期フェーズを支えられる。",
-    },
-    {
-        "name": "高橋 結衣",
-        "skills": ["技術選定", "インフラ"],
-        "reason": "安定したシステム基盤を設計でき、プロダクト初期構築の実現性を高められる。",
-    },
-]
+STEPS = ["ターゲット入力", "課題選択", "事業案選択", "詳細分析"]
+PAGE_TO_STEP = {"landing": 0, "issue_list": 1, "idea_list": 2, "detail": 3}
 
 
-# ---------------------------
+# ============================================================
+# カスタムCSS
+# ============================================================
+
+def inject_css():
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Noto Sans JP', 'Inter', sans-serif;
+    }
+    .stApp {
+        background: #0f1117;
+        color: #e2e8f0;
+    }
+    .block-container {
+        max-width: 820px !important;
+        padding: 2rem 2rem 5rem !important;
+    }
+    header[data-testid="stHeader"] { display: none; }
+    #MainMenu { display: none; }
+    footer { display: none; }
+
+    .step-bar {
+        display: flex;
+        align-items: center;
+        background: #1a1d27;
+        border: 1px solid #2a2d3e;
+        border-radius: 12px;
+        padding: 14px 20px;
+        margin-bottom: 2.4rem;
+    }
+    .step-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex: 1;
+        min-width: 0;
+    }
+    .step-dot {
+        width: 26px; height: 26px;
+        border-radius: 50%;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: 700;
+        flex-shrink: 0;
+        border: 2px solid #2a2d3e;
+        background: transparent;
+        color: #4b5563;
+    }
+    .step-dot.active {
+        background: linear-gradient(135deg,#6366f1,#8b5cf6);
+        border-color: transparent; color: #fff;
+        box-shadow: 0 0 14px rgba(99,102,241,.5);
+    }
+    .step-dot.done {
+        background: #10b981; border-color: transparent; color: #fff;
+    }
+    .step-label {
+        font-size: 11px; font-weight: 500;
+        color: #4b5563; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+    }
+    .step-label.active { color: #a5b4fc; }
+    .step-label.done   { color: #6ee7b7; }
+    .step-line {
+        flex: 0 0 20px; height: 1px;
+        background: #2a2d3e; margin: 0 4px;
+    }
+    .step-line.done { background: #10b981; }
+
+    .hero-wrap { text-align: center; padding: 2.5rem 0 2rem; }
+    .hero-badge {
+        display: inline-block;
+        background: rgba(99,102,241,.12);
+        border: 1px solid rgba(99,102,241,.3);
+        color: #a5b4fc; font-size: 11px; font-weight: 700;
+        padding: 4px 14px; border-radius: 100px; letter-spacing: 1px;
+        margin-bottom: 1.2rem;
+    }
+    .hero-title {
+        font-size: 36px; font-weight: 800; line-height: 1.25;
+        letter-spacing: -0.5px; margin-bottom: 1rem;
+        background: linear-gradient(135deg, #f1f5f9 0%, #a5b4fc 55%, #8b5cf6 100%);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        background-clip: text;
+    }
+    .hero-desc {
+        font-size: 14px; color: #94a3b8; line-height: 1.75; margin-bottom: 2.2rem;
+    }
+
+    .page-title {
+        font-size: 24px; font-weight: 800; color: #f1f5f9;
+        margin-bottom: 4px; letter-spacing: -0.3px;
+    }
+    .page-subtitle {
+        font-size: 13px; color: #64748b; margin-bottom: 1.4rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .stTextArea textarea {
+        background: #1a1d27 !important;
+        border: 1px solid #2a2d3e !important;
+        border-radius: 10px !important;
+        color: #e2e8f0 !important;
+        font-size: 14px !important;
+        font-family: 'Noto Sans JP', sans-serif !important;
+        padding: 14px !important;
+        resize: none !important;
+    }
+    .stTextArea textarea:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 3px rgba(99,102,241,.15) !important;
+        outline: none !important;
+    }
+    .stTextInput > div > div > input {
+        background: #1a1d27 !important;
+        border: 1px solid #2a2d3e !important;
+        border-radius: 8px !important;
+        color: #e2e8f0 !important;
+        font-size: 13px !important;
+    }
+    .stTextInput > div > div > input:focus {
+        border-color: #6366f1 !important;
+        box-shadow: 0 0 0 3px rgba(99,102,241,.15) !important;
+    }
+
+    div.stButton > button {
+        background: #1a1d27 !important;
+        border: 1px solid #2a2d3e !important;
+        color: #94a3b8 !important;
+        font-size: 13px !important; font-weight: 500 !important;
+        border-radius: 8px !important;
+        padding: 0.55rem 1rem !important;
+        transition: all 0.18s !important;
+    }
+    div.stButton > button:hover {
+        border-color: #6366f1 !important;
+        color: #a5b4fc !important;
+        background: rgba(99,102,241,.08) !important;
+    }
+    div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg,#6366f1,#8b5cf6) !important;
+        border: none !important;
+        color: #fff !important;
+        font-weight: 600 !important;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        opacity: .88 !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 20px rgba(99,102,241,.4) !important;
+    }
+
+    .issue-card {
+        background: #1a1d27;
+        border: 1px solid #2a2d3e;
+        border-radius: 10px;
+        padding: 14px 18px;
+        margin-bottom: 8px;
+        display: flex; align-items: flex-start; gap: 12px;
+        transition: border-color .18s, background .18s;
+        cursor: pointer;
+    }
+    .issue-card.selected {
+        border-color: #6366f1;
+        background: rgba(99,102,241,.07);
+    }
+    .issue-num {
+        font-size: 10px; font-weight: 700; color: #6366f1;
+        background: rgba(99,102,241,.13);
+        border-radius: 4px; padding: 3px 7px;
+        flex-shrink: 0; margin-top: 1px; letter-spacing: .5px;
+    }
+    .issue-text { font-size: 13.5px; line-height: 1.65; color: #cbd5e1; flex: 1; }
+    .issue-check { color: #6366f1; font-size: 15px; flex-shrink: 0; margin-top: 1px; }
+
+    .idea-card {
+        background: #1a1d27;
+        border: 1px solid #2a2d3e;
+        border-radius: 12px;
+        padding: 18px 20px;
+        margin-bottom: 10px;
+        position: relative; overflow: hidden;
+        transition: border-color .18s, transform .15s;
+    }
+    .idea-card::before {
+        content: '';
+        position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+        background: linear-gradient(180deg,#6366f1,#8b5cf6);
+        opacity: 0; transition: opacity .18s;
+    }
+    .idea-card.selected { border-color: #6366f1; background: rgba(99,102,241,.07); }
+    .idea-card.selected::before { opacity: 1; }
+    .idea-header {
+        display: flex; align-items: flex-start;
+        justify-content: space-between; gap: 12px; margin-bottom: 8px;
+    }
+    .idea-title { font-size: 15px; font-weight: 700; color: #f1f5f9; }
+    .idea-score {
+        background: rgba(99,102,241,.18);
+        border: 1px solid rgba(99,102,241,.28);
+        color: #a5b4fc; font-size: 12px; font-weight: 700;
+        padding: 3px 11px; border-radius: 100px; white-space: nowrap; flex-shrink: 0;
+    }
+    .idea-summary { font-size: 13px; color: #94a3b8; line-height: 1.65; }
+
+    .detail-hero {
+        background: linear-gradient(135deg,#1a1d27,#1c1830);
+        border: 1px solid #2a2d3e;
+        border-radius: 14px; padding: 24px 26px; margin-bottom: 1.6rem;
+    }
+    .detail-title { font-size: 21px; font-weight: 800; color: #f1f5f9; margin-bottom: 8px; }
+    .detail-summary { font-size: 13.5px; color: #94a3b8; line-height: 1.7; margin-bottom: 18px; }
+    .score-pill {
+        display: inline-flex; align-items: baseline; gap: 6px;
+        background: rgba(99,102,241,.14);
+        border: 1px solid rgba(99,102,241,.28);
+        border-radius: 8px; padding: 8px 18px;
+    }
+    .score-label { font-size: 11px; font-weight: 600; color: #6366f1; }
+    .score-value { font-size: 26px; font-weight: 800; color: #a5b4fc; }
+
+    .section-heading {
+        font-size: 14px; font-weight: 700; color: #e2e8f0;
+        display: flex; align-items: center; gap: 8px;
+        margin: 1.8rem 0 1rem;
+        padding-bottom: 10px; border-bottom: 1px solid #2a2d3e;
+    }
+
+    .force-card {
+        background: #1a1d27; border: 1px solid #2a2d3e;
+        border-radius: 9px; padding: 14px 16px; margin-bottom: 8px;
+    }
+    .force-label {
+        font-size: 10px; font-weight: 700; color: #6366f1;
+        text-transform: uppercase; letter-spacing: .8px; margin-bottom: 5px;
+    }
+    .force-text { font-size: 13px; color: #94a3b8; line-height: 1.65; }
+
+    .talent-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .talent-card {
+        background: #1a1d27; border: 1px solid #2a2d3e;
+        border-radius: 9px; padding: 14px 16px;
+    }
+    .talent-role { font-size: 13px; font-weight: 700; color: #f1f5f9; margin-bottom: 5px; }
+    .talent-reason { font-size: 12px; color: #94a3b8; line-height: 1.6; }
+
+    .api-live {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: rgba(16,185,129,.1); border: 1px solid rgba(16,185,129,.28);
+        color: #6ee7b7; font-size: 11px; font-weight: 600;
+        padding: 4px 12px; border-radius: 100px; margin-bottom: 1.4rem;
+    }
+    .api-demo {
+        display: inline-flex; align-items: center; gap: 6px;
+        background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.28);
+        color: #fcd34d; font-size: 11px; font-weight: 600;
+        padding: 4px 12px; border-radius: 100px; margin-bottom: 1.4rem;
+    }
+    .dot-g { width:7px;height:7px;border-radius:50%;background:#10b981;animation:blink 2s infinite; }
+    .dot-y { width:7px;height:7px;border-radius:50%;background:#f59e0b; }
+    @keyframes blink { 0%,100%{opacity:1}50%{opacity:.35} }
+
+    hr { border-color: #2a2d3e !important; margin: 1.4rem 0 !important; }
+    label { color: #94a3b8 !important; font-size: 12px !important; }
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: #0f1117; }
+    ::-webkit-scrollbar-thumb { background: #2a2d3e; border-radius: 3px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+# ============================================================
+# UIヘルパー
+# ============================================================
+
+def render_step_bar(current_page: str):
+    step = PAGE_TO_STEP.get(current_page, 0)
+    html = '<div class="step-bar">'
+    for i, label in enumerate(STEPS):
+        if i < step:
+            dc, lc, inner = "done", "done", "✓"
+        elif i == step:
+            dc, lc, inner = "active", "active", str(i + 1)
+        else:
+            dc, lc, inner = "", "", str(i + 1)
+        html += f'<div class="step-item"><div class="step-dot {dc}">{inner}</div><span class="step-label {lc}">{label}</span></div>'
+        if i < len(STEPS) - 1:
+            lc2 = "done" if i < step else ""
+            html += f'<div class="step-line {lc2}"></div>'
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def ai_ready(*required_funcs: str) -> bool:
+    is_available = getattr(ai, "is_available", None)
+    if not callable(is_available):
+        return False
+
+    try:
+        if not is_available():
+            return False
+    except Exception:
+        return False
+
+    for func_name in required_funcs:
+        func = getattr(ai, func_name, None)
+        if not callable(func):
+            return False
+
+    return True
+
+
+def api_badge():
+    if ai_ready():
+        st.markdown('<span class="api-live"><span class="dot-g"></span>OpenAI API 接続済み</span>', unsafe_allow_html=True)
+    else:
+        st.markdown('<span class="api-demo"><span class="dot-y"></span>デモモード（OPENAI_API_KEY 未設定 または openai_client 未対応）</span>', unsafe_allow_html=True)
+
+
+# ============================================================
 # セッション初期化
-# ---------------------------
-def init_session() -> None:
+# ============================================================
+
+def init_session():
     defaults = {
-        "step": "input",
+        "page": "landing",
         "target": "",
+        "session_id": None,
         "issues": [],
         "selected_issue": None,
         "ideas": [],
         "selected_idea": None,
-        "five_forces": None,
-        "member_cards": [],
     }
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 
-init_session()
+# ============================================================
+# データ取得
+# ============================================================
+
+def fetch_issues(target: str) -> list:
+    if ai_ready("call_openai", "parse_json_response"):
+        prompt = prompts.build_issue_prompt(target)
+        parsed = ai.parse_json_response(ai.call_openai(prompt))
+        if isinstance(parsed, list) and parsed:
+            issues = [{"id": i + 1, "text": item.get("text", "")} for i, item in enumerate(parsed)]
+            sid = db.create_session(target)
+            st.session_state.session_id = sid
+            for issue, did in zip(issues, db.save_issues(sid, issues)):
+                issue["db_id"] = did
+            return issues
+    return MOCK_ISSUES.copy()
 
 
-# ---------------------------
-# AI / モック橋渡し
-# ---------------------------
-def get_issues(target: str):
-    result = ai.fetch_issues_from_ai(target)
-    if result and "issues" in result and result["issues"]:
-        return result["issues"]
-    return MOCK_ISSUES
+def fetch_more_issues(target: str, existing: list) -> list:
+    if ai_ready("call_openai", "parse_json_response"):
+        prompt = prompts.build_more_issue_prompt(target, [i["text"] for i in existing])
+        parsed = ai.parse_json_response(ai.call_openai(prompt))
+        if isinstance(parsed, list) and parsed:
+            sid = max(i["id"] for i in existing) + 1
+            more = [{"id": sid + i, "text": item.get("text", "")} for i, item in enumerate(parsed)]
+            if st.session_state.session_id:
+                for issue, did in zip(more, db.save_issues(st.session_state.session_id, more)):
+                    issue["db_id"] = did
+            return deduplicate(existing + more, text_key="text")
+    return MOCK_MORE_ISSUES.copy()
 
 
-def get_more_issues(target: str, existing_issues):
-    result = ai.fetch_more_issues_from_ai(target, existing_issues)
-    if result and "issues" in result and result["issues"]:
-        return result["issues"]
-    return []
+def fetch_ideas(target: str, issue: dict) -> list:
+    if ai_ready("call_openai", "parse_json_response"):
+        prompt = prompts.build_idea_prompt(target, issue["text"])
+        parsed = ai.parse_json_response(ai.call_openai(prompt))
+        if isinstance(parsed, list) and parsed:
+            ideas = [{"id": i + 1, "title": x.get("title", ""), "summary": x.get("summary", ""), "score": int(x.get("score", 50))} for i, x in enumerate(parsed)]
+            if st.session_state.session_id and issue.get("db_id"):
+                for idea, did in zip(ideas, db.save_ideas(st.session_state.session_id, issue["db_id"], ideas)):
+                    idea["db_id"] = did
+            return ideas
+    return MOCK_IDEAS.copy()
 
 
-def get_ideas(target: str, issue_title: str, issue_description: str):
-    result = ai.fetch_ideas_from_ai(target, issue_title, issue_description)
-    if result and "ideas" in result and result["ideas"]:
-        return result["ideas"]
-    return MOCK_IDEAS
+def fetch_more_ideas(target: str, issue: dict, existing: list) -> list:
+    if ai_ready("call_openai", "parse_json_response"):
+        prompt = prompts.build_more_idea_prompt(target, issue["text"], [i["title"] for i in existing])
+        parsed = ai.parse_json_response(ai.call_openai(prompt))
+        if isinstance(parsed, list) and parsed:
+            sid = max(i["id"] for i in existing) + 1
+            more = [{"id": sid + i, "title": x.get("title", ""), "summary": x.get("summary", ""), "score": int(x.get("score", 50))} for i, x in enumerate(parsed)]
+            if st.session_state.session_id and issue.get("db_id"):
+                for idea, did in zip(more, db.save_ideas(st.session_state.session_id, issue["db_id"], more)):
+                    idea["db_id"] = did
+            return existing + more
+    return MOCK_MORE_IDEAS.copy()
 
 
-def get_more_ideas(target: str, issue_title: str, issue_description: str, existing_ideas):
-    result = ai.fetch_more_ideas_from_ai(target, issue_title, issue_description, existing_ideas)
-    if result and "ideas" in result and result["ideas"]:
-        return result["ideas"]
-    return []
+def fetch_detail(idea: dict) -> dict:
+    if idea.get("db_id"):
+        cached = db.get_detail(idea["db_id"])
+        if cached:
+            return cached
+    if ai_ready("call_openai", "parse_json_response"):
+        prompt = prompts.build_detail_prompt(idea["title"], idea["summary"])
+        parsed = ai.parse_json_response(ai.call_openai(prompt, max_tokens=2000))
+        if isinstance(parsed, dict) and "five_forces" in parsed:
+            if idea.get("db_id"):
+                db.save_detail(idea["db_id"], parsed)
+            return parsed
+    return MOCK_DETAIL.copy()
 
 
-def get_five_forces(idea_title: str, idea_overview: str):
-    result = ai.fetch_five_forces_from_ai(idea_title, idea_overview)
-    if result and "five_forces" in result:
-        return result
-    return MOCK_FIVE_FORCES
+# ============================================================
+# 画面レンダリング
+# ============================================================
 
+def render_landing():
+    render_step_bar("landing")
+    st.markdown("""
+    <div class="hero-wrap">
+        <div class="hero-badge">✦ AI BUSINESS ARCHITECT</div>
+        <div class="hero-title">新規事業アイデアを<br>AIが体系的に設計する</div>
+        <div class="hero-desc">ターゲットを入力するだけで、課題の抽出から事業案の生成、<br>5Forces分析・推奨人材まで一気通貫でアウトプットします。</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-def get_member_cards(idea_title: str):
-    cards = []
-    for member in MOCK_MEMBERS:
-        ai_result = ai.fetch_member_reason_from_ai(
-            idea_title,
-            member["name"],
-            member["skills"],
-        )
-        reason = member["reason"]
-        if ai_result and "member_reason" in ai_result:
-            reason = ai_result["member_reason"].get("reason", reason)
+    api_badge()
 
-        cards.append(
-            {
-                "name": member["name"],
-                "skills": member["skills"],
-                "reason": reason,
-            }
-        )
-    return cards
-
-
-# ---------------------------
-# レンダリング関数
-# ---------------------------
-def render_input() -> None:
-    st.markdown('<div class="main-title">BizSpark AI</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="sub-copy">ターゲットを入力すると、課題抽出から事業案比較まで行います。</div>',
-        unsafe_allow_html=True,
+    target = st.text_area(
+        "ターゲット",
+        placeholder="例：一人暮らしの高齢者（70代）とその家族",
+        height=110,
+        label_visibility="collapsed",
     )
-
-    target = st.text_input("ターゲットを入力してください", placeholder="例：30代共働き、子どもあり、都内在住")
-
-    if st.button("課題を生成", use_container_width=True):
+    st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
+    if st.button("課題を生成する　→", type="primary", use_container_width=True):
         if not target.strip():
             st.warning("ターゲットを入力してください。")
             return
-
-        st.session_state.target = target.strip()
-        with st.spinner("課題を生成しています..."):
-            st.session_state.issues = get_issues(st.session_state.target)
-        st.session_state.step = "issues"
+        with st.spinner("課題を分析中..."):
+            issues = fetch_issues(target.strip())
+        st.session_state.update(
+            target=target.strip(), issues=issues,
+            selected_issue=None, ideas=[], selected_idea=None, page="issue_list"
+        )
         st.rerun()
 
 
-def render_issues() -> None:
-    st.markdown('<div class="section-title">課題一覧</div>', unsafe_allow_html=True)
-    st.caption(f"ターゲット: {st.session_state.target}")
+def render_issue_list():
+    render_step_bar("issue_list")
+    st.markdown('<div class="page-title">課題一覧</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="page-subtitle">ターゲット：{st.session_state.target}</div>', unsafe_allow_html=True)
 
-    for i, issue in enumerate(st.session_state.issues):
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown(f"### {issue['title']}")
-        st.write(issue["description"])
-        if st.button("この課題で事業案を生成", key=f"issue_select_{i}", use_container_width=True):
-            st.session_state.selected_issue = issue
-            with st.spinner("事業案を生成しています..."):
-                st.session_state.ideas = get_ideas(
-                    st.session_state.target,
-                    issue["title"],
-                    issue["description"],
-                )
-            st.session_state.step = "ideas"
+    issues = st.session_state.issues
+    selected_id = st.session_state.selected_issue
+
+    query = st.text_input("絞り込み", placeholder="🔍 キーワードで絞り込み...", label_visibility="collapsed")
+    display = rank_by_query(query.strip(), issues, text_key="text", top_n=len(issues)) if query.strip() else issues
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    for issue in display:
+        sel = selected_id == issue["id"]
+        check = '<span class="issue-check">✓</span>' if sel else ""
+        cls = "issue-card selected" if sel else "issue-card"
+        st.markdown(f"""
+        <div class="{cls}">
+            <span class="issue-num">#{issue['id']:02d}</span>
+            <span class="issue-text">{issue['text']}</span>
+            {check}
+        </div>""", unsafe_allow_html=True)
+        if st.button("選択", key=f"iss_{issue['id']}"):
+            st.session_state.selected_issue = issue["id"]
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    col1, col2 = st.columns(2)
-    with col1:
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.2, 1.5])
+    with c1:
+        if st.button("← 戻る", use_container_width=True):
+            st.session_state.page = "landing"; st.rerun()
+    with c2:
         if st.button("さらに5件生成", use_container_width=True):
-            with st.spinner("追加の課題を生成しています..."):
-                more = get_more_issues(st.session_state.target, st.session_state.issues)
-            if more:
-                st.session_state.issues.extend(more)
-            else:
-                st.info("追加の課題を生成できませんでした。")
+            with st.spinner("生成中..."):
+                more = fetch_more_issues(st.session_state.target, issues)
+            ex_ids = {i["id"] for i in issues}
+            st.session_state.issues = issues + [i for i in more if i["id"] not in ex_ids]
             st.rerun()
-    with col2:
-        if st.button("最初に戻る", use_container_width=True):
-            st.session_state.step = "input"
+    with c3:
+        if st.button("事業案を生成する　→", type="primary", use_container_width=True):
+            if selected_id is None:
+                st.warning("課題を1件選択してください。"); return
+            sel_issue = next(i for i in issues if i["id"] == selected_id)
+            with st.spinner("事業案を生成中..."):
+                ideas = fetch_ideas(st.session_state.target, sel_issue)
+            st.session_state.update(ideas=ideas, selected_idea=None, page="idea_list")
             st.rerun()
 
 
-def render_ideas() -> None:
-    st.markdown('<div class="section-title">事業案一覧</div>', unsafe_allow_html=True)
-    issue = st.session_state.selected_issue
-    st.caption(f"ターゲット: {st.session_state.target} / 課題: {issue['title']}")
+def render_idea_list():
+    render_step_bar("idea_list")
+    sel_issue = next((i for i in st.session_state.issues if i["id"] == st.session_state.selected_issue), None)
+    st.markdown('<div class="page-title">事業案一覧</div>', unsafe_allow_html=True)
+    if sel_issue:
+        st.markdown(f'<div class="page-subtitle">課題：{sel_issue["text"]}</div>', unsafe_allow_html=True)
 
-    for i, idea in enumerate(st.session_state.ideas):
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.markdown('<div class="pill">事業案</div>', unsafe_allow_html=True)
-        st.markdown(f"### {idea['title']}")
-        st.write(idea.get("overview", ""))
+    ideas = st.session_state.ideas
+    selected_id = st.session_state.selected_idea
 
-        if idea.get("solution"):
-            st.write(f"**解決方法**: {idea['solution']}")
-        if idea.get("value"):
-            st.write(f"**提供価値**: {idea['value']}")
-        if idea.get("score") is not None:
-            st.markdown(
-                f'<div class="score-box">スコア: {idea.get("score", 0)}</div>',
-                unsafe_allow_html=True,
-            )
-        if idea.get("reason"):
-            st.write(f"**理由**: {idea['reason']}")
+    query = st.text_input("絞り込み", placeholder="🔍 キーワードで絞り込み...", label_visibility="collapsed")
+    display = rank_by_query(query.strip(), ideas, text_key="title", top_n=len(ideas)) if query.strip() else ideas
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-        if st.button("この事業案の詳細を見る", key=f"idea_select_{i}", use_container_width=True):
-            st.session_state.selected_idea = idea
-            with st.spinner("分析結果を生成しています..."):
-                st.session_state.five_forces = get_five_forces(
-                    idea["title"],
-                    idea.get("overview", ""),
-                )
-                st.session_state.member_cards = get_member_cards(idea["title"])
-            st.session_state.step = "detail"
-            st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+    for idea in display:
+        sel = selected_id == idea["id"]
+        cls = "idea-card selected" if sel else "idea-card"
+        btn_label = "✓ 選択中" if sel else "選択する"
+        st.markdown(f"""
+        <div class="{cls}">
+            <div class="idea-header">
+                <span class="idea-title">{idea['title']}</span>
+                <span class="idea-score">Score {idea['score']}</span>
+            </div>
+            <div class="idea-summary">{idea['summary']}</div>
+        </div>""", unsafe_allow_html=True)
+        if st.button(btn_label, key=f"idea_{idea['id']}"):
+            st.session_state.selected_idea = idea["id"]; st.rerun()
 
-    col1, col2 = st.columns(2)
-    with col1:
+    st.markdown("<div style='height:14px'></div>", unsafe_allow_html=True)
+    c1, c2, c3 = st.columns([1, 1.2, 1.5])
+    with c1:
+        if st.button("← 戻る", use_container_width=True):
+            st.session_state.page = "issue_list"; st.rerun()
+    with c2:
         if st.button("さらに5件生成", use_container_width=True):
-            with st.spinner("追加の事業案を生成しています..."):
-                more = get_more_ideas(
-                    st.session_state.target,
-                    issue["title"],
-                    issue["description"],
-                    st.session_state.ideas,
-                )
-            if more:
-                st.session_state.ideas.extend(more)
-            else:
-                st.info("追加の事業案を生成できませんでした。")
-            st.rerun()
-    with col2:
-        if st.button("課題一覧に戻る", use_container_width=True):
-            st.session_state.step = "issues"
-            st.rerun()
+            with st.spinner("生成中..."):
+                more = fetch_more_ideas(st.session_state.target, sel_issue, ideas)
+            st.session_state.ideas = more; st.rerun()
+    with c3:
+        if st.button("詳細分析を見る　→", type="primary", use_container_width=True):
+            if selected_id is None:
+                st.warning("事業案を1件選択してください。"); return
+            st.session_state.page = "detail"; st.rerun()
 
 
-def render_detail() -> None:
-    idea = st.session_state.selected_idea
-    ff = (st.session_state.five_forces or MOCK_FIVE_FORCES).get("five_forces", {})
-    members = st.session_state.member_cards or MOCK_MEMBERS
+def render_detail():
+    render_step_bar("detail")
+    ideas = st.session_state.ideas
+    idea = next((i for i in ideas if i["id"] == st.session_state.selected_idea), None)
+    if idea is None:
+        st.error("事業案が見つかりません。"); return
 
-    st.markdown('<div class="section-title">事業案詳細</div>', unsafe_allow_html=True)
-    st.caption(f"ターゲット: {st.session_state.target}")
+    with st.spinner("詳細を取得中..."):
+        detail = fetch_detail(idea)
 
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.markdown(f"### {idea['title']}")
-    st.write(f"**概要**: {idea.get('overview', '')}")
-    st.write(f"**解決方法**: {idea.get('solution', '')}")
-    st.write(f"**提供価値**: {idea.get('value', '')}")
-    st.markdown(
-        f'<div class="score-box">スコア: {idea.get("score", 0)}</div>',
-        unsafe_allow_html=True,
+    st.markdown(f"""
+    <div class="detail-hero">
+        <div class="detail-title">{idea['title']}</div>
+        <div class="detail-summary">{idea['summary']}</div>
+        <div class="score-pill">
+            <span class="score-label">総合スコア</span>
+            <span class="score-value">{idea['score']}</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="section-heading">⬡ 5Forces 分析</div>', unsafe_allow_html=True)
+    for force, text in detail["five_forces"].items():
+        st.markdown(f"""
+        <div class="force-card">
+            <div class="force-label">{force}</div>
+            <div class="force-text">{text}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="section-heading">◈ 推奨人材</div>', unsafe_allow_html=True)
+    talent_html = "".join([
+        f'<div class="talent-card"><div class="talent-role">👤 {p["role"]}</div><div class="talent-reason">{p["reason"]}</div></div>'
+        for p in detail["talent"]
+    ])
+    st.markdown(f'<div class="talent-grid">{talent_html}</div>', unsafe_allow_html=True)
+
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    if st.button("← 事業案一覧へ戻る"):
+        st.session_state.page = "idea_list"; st.rerun()
+
+
+# ============================================================
+# メインルーター
+# ============================================================
+
+def main():
+    st.set_page_config(
+        page_title="AI Business Architect",
+        page_icon="⬡",
+        layout="centered",
     )
-    st.write(f"**スコア理由**: {idea.get('reason', '')}")
-    st.markdown('</div>', unsafe_allow_html=True)
+    inject_css()
+    db.init_db()
+    init_session()
 
-    st.markdown('<div class="section-title">5Forces分析</div>', unsafe_allow_html=True)
-    col1, col2, col3, col4, col5 = st.columns(5)
-    force_map = [
-        ("industry_rivalry", "競争環境"),
-        ("threat_of_new_entry", "新規参入"),
-        ("threat_of_substitutes", "代替品"),
-        ("buyer_power", "買い手交渉力"),
-        ("supplier_power", "売り手交渉力"),
-    ]
-    cols = [col1, col2, col3, col4, col5]
-
-    for col, (key, label) in zip(cols, force_map):
-        item = ff.get(key, {"score": "-", "reason": "情報なし"})
-        with col:
-            st.markdown('<div class="mini-card">', unsafe_allow_html=True)
-            st.markdown(f'<div class="force-label">{label}</div>', unsafe_allow_html=True)
-            st.markdown(
-                f'<div class="score-box">{item.get("score", "-")}</div>',
-                unsafe_allow_html=True,
-            )
-            st.markdown(f"<div class='muted' style='margin-top:10px;'>{item.get('reason', '')}</div>", unsafe_allow_html=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown('<div class="section-title">推奨人材</div>', unsafe_allow_html=True)
-    member_cols = st.columns(4)
-    for col, member in zip(member_cols, members):
-        with col:
-            st.markdown('<div class="mini-card">', unsafe_allow_html=True)
-            st.markdown(f"### {member['name']}")
-            st.write("**スキル**: " + " / ".join(member.get("skills", [])))
-            st.write("**選定理由**: " + member.get("reason", ""))
-            st.markdown('</div>', unsafe_allow_html=True)
-
-    if st.button("事業案一覧に戻る", use_container_width=True):
-        st.session_state.step = "ideas"
-        st.rerun()
+    page = st.session_state.page
+    if page == "landing":       render_landing()
+    elif page == "issue_list":  render_issue_list()
+    elif page == "idea_list":   render_idea_list()
+    elif page == "detail":      render_detail()
+    else:
+        st.session_state.page = "landing"; st.rerun()
 
 
-# ---------------------------
-# メイン描画
-# ---------------------------
-if st.session_state.step == "input":
-    render_input()
-elif st.session_state.step == "issues":
-    render_issues()
-elif st.session_state.step == "ideas":
-    render_ideas()
-elif st.session_state.step == "detail":
-    render_detail()
+if __name__ == "__main__":
+    main()

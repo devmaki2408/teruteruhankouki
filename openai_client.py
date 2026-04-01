@@ -9,24 +9,26 @@ load_dotenv()
 
 JSONType = Union[Dict[str, Any], List[Any]]
 
-_api_key = os.getenv("OPENAI_API_KEY")
 
-if not _api_key:
-    raise ValueError("OPENAI_API_KEY が設定されていません")
+def is_available() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY"))
 
-_client = OpenAI(api_key=_api_key)
-from prompts import (
-    build_issue_generation_prompt,
-    build_more_issue_generation_prompt,
-    build_idea_generation_prompt,
-    build_more_idea_generation_prompt,
-    build_five_forces_prompt,
-    build_member_reason_prompt,
-)
 
-def generate_json(prompt: str) -> Optional[JSONType]:
+def _get_client() -> Optional[OpenAI]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    return OpenAI(api_key=api_key)
+
+
+def call_openai(prompt: str, max_tokens: int = 1200) -> Optional[str]:
     try:
-        response = _client.responses.create(
+        client = _get_client()
+        if client is None:
+            print("⚠️ OPENAI_API_KEY が設定されていません")
+            return None
+
+        response = client.responses.create(
             model="gpt-4o-mini",
             input=[
                 {
@@ -38,7 +40,7 @@ def generate_json(prompt: str) -> Optional[JSONType]:
                     "content": prompt,
                 },
             ],
-            text={"format": {"type": "json_object"}},
+            max_output_tokens=max_tokens,
         )
 
         raw_text = getattr(response, "output_text", None)
@@ -54,64 +56,23 @@ def generate_json(prompt: str) -> Optional[JSONType]:
             print("⚠️ AIレスポンスが空です")
             return None
 
-        try:
-            parsed = json.loads(raw_text)
-            return parsed if isinstance(parsed, (dict, list)) else None
-        except json.JSONDecodeError:
-            print("⚠️ JSONパース失敗")
-            print(raw_text)
-            return None
+        return raw_text
 
     except Exception as e:
         print("⚠️ OpenAIエラー:", str(e))
         return None
 
 
-def fetch_issues_from_ai(target: str) -> Optional[Dict[str, Any]]:
-    prompt = build_issue_generation_prompt(target)
-    return generate_json(prompt)
+def parse_json_response(raw_text: Optional[str]) -> Optional[JSONType]:
+    if not raw_text:
+        return None
 
-
-def fetch_more_issues_from_ai(target: str, existing_issues: list) -> Optional[Dict[str, Any]]:
-    prompt = build_more_issue_generation_prompt(
-        target,
-        json.dumps(existing_issues, ensure_ascii=False, indent=2)
-    )
-    return generate_json(prompt)
-
-
-def fetch_ideas_from_ai(target: str, issue_title: str, issue_description: str) -> Optional[Dict[str, Any]]:
-    prompt = build_idea_generation_prompt(target, issue_title, issue_description)
-    return generate_json(prompt)
-
-def fetch_more_ideas_from_ai(
-    target: str,
-    issue_title: str,
-    issue_description: str,
-    existing_ideas: list,
-) -> Optional[Dict[str, Any]]:
-    prompt = build_more_idea_generation_prompt(
-        target,
-        issue_title,
-        issue_description,
-        json.dumps(existing_ideas, ensure_ascii=False, indent=2),
-    )
-    return generate_json(prompt)
-
-
-def fetch_five_forces_from_ai(idea_title: str, idea_overview: str) -> Optional[Dict[str, Any]]:
-    prompt = build_five_forces_prompt(idea_title, idea_overview)
-    return generate_json(prompt)
-
-
-def fetch_member_reason_from_ai(
-    idea_title: str,
-    member_name: str,
-    member_skills: list,
-) -> Optional[Dict[str, Any]]:
-    prompt = build_member_reason_prompt(
-        idea_title,
-        member_name,
-        json.dumps(member_skills, ensure_ascii=False, indent=2),
-    )
-    return generate_json(prompt)
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, (dict, list)):
+            return parsed
+        return None
+    except json.JSONDecodeError:
+        print("⚠️ JSONパース失敗")
+        print(raw_text)
+        return None
